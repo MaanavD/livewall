@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>shot</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style></head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import { PRELUDE, WALLPAPERS } from './shaders.js';
+const VS = `#version 300 es
+void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+const c = document.getElementById('c');
+c.width = innerWidth; c.height = innerHeight;
+const g = c.getContext('webgl2', { antialias:false, preserveDrawingBuffer:true });
+g.bindVertexArray(g.createVertexArray());
+const cache = new Map();
+function prog(i){
+  if(!cache.has(i)){
+    const vs=g.createShader(g.VERTEX_SHADER); g.shaderSource(vs,VS); g.compileShader(vs);
+    const fs=g.createShader(g.FRAGMENT_SHADER); g.shaderSource(fs,PRELUDE+WALLPAPERS[i].src); g.compileShader(fs);
+    const p=g.createProgram(); g.attachShader(p,vs); g.attachShader(p,fs); g.linkProgram(p);
+    cache.set(i, {p, r:g.getUniformLocation(p,'u_res'), t:g.getUniformLocation(p,'u_time'), o:g.getUniformLocation(p,'u_oled')});
+  }
+  return cache.get(i);
+}
+window.__count = WALLPAPERS.length;
+window.__names = WALLPAPERS.map(w=>w.name);
+window.__render = (i, time, oled=1) => {
+  const pr = prog(i);
+  g.viewport(0,0,c.width,c.height); g.useProgram(pr.p);
+  g.uniform2f(pr.r,c.width,c.height); g.uniform1f(pr.t,time); g.uniform1f(pr.o,oled);
+  g.drawArrays(g.TRIANGLES,0,3);
+  g.finish();
+  return true;
+};
+window.__shotReady = true;
+</script>
+</body></html>

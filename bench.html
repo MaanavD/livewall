@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>bench</title></head>
+<body style="background:#111;color:#eee;font:13px monospace;padding:20px">
+<pre id="out">running…</pre>
+<script type="module">
+import { PRELUDE, WALLPAPERS } from './shaders.js';
+const VS = `#version 300 es
+void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+const W = 640, H = 360;
+const c = document.createElement('canvas'); c.width = W; c.height = H;
+const g = c.getContext('webgl2', { antialias:false, preserveDrawingBuffer:true });
+g.bindVertexArray(g.createVertexArray());
+const errs = [];
+function prog(src, i){
+  const vs=g.createShader(g.VERTEX_SHADER); g.shaderSource(vs,VS); g.compileShader(vs);
+  const fs=g.createShader(g.FRAGMENT_SHADER); g.shaderSource(fs,PRELUDE+src); g.compileShader(fs);
+  if(!g.getShaderParameter(fs,g.COMPILE_STATUS)) errs.push(i+': '+g.getShaderInfoLog(fs).slice(0,160));
+  const p=g.createProgram(); g.attachShader(p,vs); g.attachShader(p,fs); g.linkProgram(p);
+  if(!g.getProgramParameter(p,g.LINK_STATUS)) errs.push(i+' LINK: '+g.getProgramInfoLog(p).slice(0,160));
+  return {p, r:g.getUniformLocation(p,'u_res'), t:g.getUniformLocation(p,'u_time'), o:g.getUniformLocation(p,'u_oled')};
+}
+function draw(pr, time, oled){
+  g.viewport(0,0,W,H); g.useProgram(pr.p);
+  g.uniform2f(pr.r,W,H); g.uniform1f(pr.t,time); g.uniform1f(pr.o,oled);
+  g.drawArrays(g.TRIANGLES,0,3);
+  const b=new Uint8Array(W*H*4); g.readPixels(0,0,W,H,g.RGBA,g.UNSIGNED_BYTE,b); return b;
+}
+function stats(b){
+  let s=0,n=b.length/4,black=0,lit=0,r=0,gg=0,bb=0;
+  for(let i=0;i<b.length;i+=4){
+    const mx=Math.max(b[i],b[i+1],b[i+2]);
+    s += (b[i]*0.299+b[i+1]*0.587+b[i+2]*0.114)/255;
+    if(mx<4) black++; if(mx>40) lit++;
+    r+=b[i]; gg+=b[i+1]; bb+=b[i+2];
+  }
+  return {mean:s/n, black:black/n, lit:lit/n, rgb:[r/n|0, gg/n|0, bb/n|0]};
+}
+function diff(a,b){ let d=0; for(let i=0;i<a.length;i+=4) d+=Math.abs(a[i]-b[i])+Math.abs(a[i+1]-b[i+1])+Math.abs(a[i+2]-b[i+2]);
+  return d/(a.length/4*3*255); }
+
+// Fingerprint for the "no repetition" check.
+//   layout: 8x8 luma grid, then zero-meaned. Without that step every full-bleed
+//           wallpaper correlates at ~0.9 with every other one, because they all
+//           share the same "bright everywhere" baseline. Zero-meaning compares the
+//           SHAPE of the brightness distribution instead of its level.
+//   edges:  8-bin gradient-orientation histogram on a 4x downsample. Separates
+//           hexagons from concentric rings from diagonal weaves.
+//   hue:    24-bin hue histogram, weighted by how colourful the pixel is.
+function fingerprint(b){
+  const G=8, grid=new Float64Array(G*G), cnt=new Float64Array(G*G), hue=new Float64Array(24);
+  const SW=W>>2, SH=H>>2, lum=new Float64Array(SW*SH);
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    const i=(y*W+x)*4, R=b[i], Gc=b[i+1], B=b[i+2];
+    const L=(R*0.299+Gc*0.587+B*0.114)/255;
+    grid[((y*G/H)|0)*G + ((x*G/W)|0)] += L; cnt[((y*G/H)|0)*G + ((x*G/W)|0)]++;
+    if((x&3)===0 && (y&3)===0 && (y>>2)<SH && (x>>2)<SW) lum[(y>>2)*SW + (x>>2)] = L;
+    const mx=Math.max(R,Gc,B), mn=Math.min(R,Gc,B), d=mx-mn;
+    if(mx>30 && d>12){
+      let h;
+      if(mx===R) h=((Gc-B)/d+6)%6; else if(mx===Gc) h=(B-R)/d+2; else h=(R-Gc)/d+4;
+      hue[Math.min(23,(h*4)|0)] += (mx/255)*(d/255);
+    }
+  }
+  for(let k=0;k<grid.length;k++) grid[k]/=cnt[k];
+  const gm = grid.reduce((a,v)=>a+v,0)/grid.length;
+  const layout = Array.from(grid, v=>v-gm);
+
+  const edges=new Float64Array(8);
+  for(let y=1;y<SH-1;y++) for(let x=1;x<SW-1;x++){
+    const gx = lum[y*SW+x+1]-lum[y*SW+x-1];
+    const gy = lum[(y+1)*SW+x]-lum[(y-1)*SW+x];
+    const mag = Math.hypot(gx,gy);
+    if(mag < 0.02) continue;
+    const ang = (Math.atan2(gy,gx) + Math.PI) % Math.PI;   // orientation, not direction
+    edges[Math.min(7,(ang/Math.PI*8)|0)] += mag;
+  }
+  const es=edges.reduce((a,v)=>a+v,0)||1;
+  const hs=hue.reduce((a,v)=>a+v,0)||1;
+  return { layout, edges:Array.from(edges,v=>v/es), hue:Array.from(hue, v=>v/hs) };
+}
+function cosine(a,b){
+  let d=0,na=0,nb=0;
+  for(let i=0;i<a.length;i++){ d+=a[i]*b[i]; na+=a[i]*a[i]; nb+=b[i]*b[i]; }
+  return d/(Math.sqrt(na)*Math.sqrt(nb)+1e-9);
+}
+
+const rows=[], fps=[];
+for(let i=0;i<WALLPAPERS.length;i++){
+  const pr = prog(WALLPAPERS[i].src, i);
+  let mean=0, blk=0, lit=0, rgb=[0,0,0];
+  for(const tt of [7.0, 19.0, 41.0]){
+    const st = stats(draw(pr, tt, 1));
+    mean+=st.mean/3; blk+=st.black/3; lit+=st.lit/3;
+    rgb = rgb.map((v,k)=>v+st.rgb[k]/3);
+  }
+  const t0=performance.now(); const f12=draw(pr,12.0,1); const ms=performance.now()-t0;
+  const mo = diff(f12, draw(pr,14.0,1));
+  fps.push(fingerprint(f12));
+  rows.push({i, name:WALLPAPERS[i].name, mean:+mean.toFixed(3), black:+blk.toFixed(2),
+             lit:+lit.toFixed(2), rgb:rgb.map(v=>Math.round(v)).join(','),
+             motion:+mo.toFixed(3), ms:+ms.toFixed(1)});
+  document.getElementById('out').textContent = `${i+1}/${WALLPAPERS.length}`;
+}
+
+const pairs=[];
+for(let i=0;i<fps.length;i++) for(let j=i+1;j<fps.length;j++){
+  const layout=cosine(fps[i].layout, fps[j].layout),
+        edges =cosine(fps[i].edges,  fps[j].edges),
+        hue   =cosine(fps[i].hue,    fps[j].hue);
+  pairs.push({a:WALLPAPERS[i].name, b:WALLPAPERS[j].name,
+              layout:+layout.toFixed(3), edges:+edges.toFixed(3), hue:+hue.toFixed(3),
+              score:+((layout*0.30 + edges*0.30 + hue*0.40)).toFixed(3)});
+}
+pairs.sort((x,y)=>y.score-x.score);
+
+window.__bench = { errs, rows, worstPairs: pairs.slice(0,12) };
+document.getElementById('out').textContent = JSON.stringify(window.__bench, null, 1);
+</script>
+</body></html>

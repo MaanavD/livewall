@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>livewall</title>
+<style>
+  :root{ --ink:#f2f4f8; --dim:#8f96a6; --panel:rgba(8,9,13,.72); --line:rgba(255,255,255,.10); }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;
+    font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Inter,Roboto,sans-serif;
+    color:var(--ink);-webkit-font-smoothing:antialiased;cursor:default}
+  body.idle{cursor:none}
+  #gl{position:fixed;left:-8px;top:-8px;display:block;transition:transform 2s ease-in-out}
+  #fade{position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;transition:opacity .28s linear}
+  #fade.on{opacity:1}
+
+  .chrome{transition:opacity .35s ease, transform .35s ease}
+  body.idle .chrome{opacity:0;transform:translateY(6px);pointer-events:none}
+  body.grid-open .chrome{opacity:0;pointer-events:none}
+
+  /* description card */
+  #card{position:fixed;left:28px;bottom:84px;max-width:min(430px,44vw);
+    background:var(--panel);backdrop-filter:blur(22px) saturate(1.3);
+    -webkit-backdrop-filter:blur(22px) saturate(1.3);
+    border:1px solid var(--line);border-radius:16px;padding:16px 18px 17px}
+  #card.hidden{display:none}
+  #card h1{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em}
+  #card .tag{display:inline-block;margin:7px 0 9px;font-size:10.5px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--dim);border:1px solid var(--line);
+    border-radius:99px;padding:2px 9px}
+  #card p{margin:0;font-size:13px;line-height:1.62;color:#c6ccd8}
+
+  /* bottom bar */
+  #bar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+    display:flex;align-items:center;gap:6px;padding:7px 8px;
+    background:var(--panel);backdrop-filter:blur(22px) saturate(1.3);
+    -webkit-backdrop-filter:blur(22px) saturate(1.3);
+    border:1px solid var(--line);border-radius:99px}
+  body.idle #bar{transform:translateX(-50%) translateY(6px)}
+  button{appearance:none;background:transparent;border:0;color:var(--ink);
+    font:inherit;font-size:12.5px;padding:7px 12px;border-radius:99px;cursor:pointer;
+    white-space:nowrap;transition:background .15s}
+  button:hover{background:rgba(255,255,255,.10)}
+  button.on{background:rgba(255,255,255,.90);color:#000}
+  .sep{width:1px;height:18px;background:var(--line);margin:0 3px}
+  #count{font-size:11.5px;color:var(--dim);padding:0 8px;font-variant-numeric:tabular-nums}
+
+  /* cycle progress */
+  #prog{position:fixed;left:0;top:0;height:2px;width:0;
+    background:linear-gradient(90deg,#4cc9f0,#f72585);opacity:.8}
+
+  /* grid picker */
+  #grid{position:fixed;inset:0;background:rgba(0,0,0,.90);
+    backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);
+    display:none;flex-direction:column;padding:34px 40px 26px;overflow-y:auto}
+  body.grid-open #grid{display:flex}
+  #grid header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px;flex:0 0 auto}
+  #grid h2{margin:0;font-size:15px;font-weight:600;letter-spacing:.02em}
+  #grid .hint{font-size:11.5px;color:var(--dim)}
+  #grid .close{margin-left:auto}
+  #tiles{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
+  .tile{position:relative;border-radius:12px;overflow:hidden;cursor:pointer;
+    border:1px solid var(--line);background:#07080c;aspect-ratio:16/9;
+    transition:transform .16s ease,border-color .16s ease}
+  .tile:hover{transform:translateY(-3px);border-color:rgba(255,255,255,.45)}
+  .tile.active{border-color:#fff;box-shadow:0 0 0 1px #fff}
+  .tile img{width:100%;height:100%;object-fit:cover;display:block}
+  .tile .lbl{position:absolute;left:0;right:0;bottom:0;padding:22px 11px 9px;
+    font-size:12px;font-weight:500;
+    background:linear-gradient(transparent,rgba(0,0,0,.88))}
+  .tile .n{position:absolute;left:9px;top:8px;font-size:10px;color:#cfd4de;
+    background:rgba(0,0,0,.55);border-radius:99px;padding:2px 7px;
+    font-variant-numeric:tabular-nums}
+
+  #help{position:fixed;right:24px;bottom:24px;font-size:11px;color:var(--dim);
+    text-align:right;line-height:1.85}
+  #help b{color:#b9c0cd;font-weight:500;background:rgba(255,255,255,.07);
+    border:1px solid var(--line);border-radius:5px;padding:1px 5px;margin-right:3px}
+  @media (max-width:760px){
+    #card{left:14px;right:14px;bottom:76px;max-width:none}
+    #help{display:none}
+    #grid{padding:22px 16px}
+    #tiles{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="fade"></div>
+<div id="prog"></div>
+
+<div id="card" class="chrome">
+  <h1 id="c-name">…</h1><br>
+  <span class="tag" id="c-tag">…</span>
+  <p id="c-desc">…</p>
+</div>
+
+<div id="bar" class="chrome">
+  <button id="b-prev" title="Previous (←)">‹</button>
+  <span id="count">1 / 24</span>
+  <button id="b-next" title="Next (→)">›</button>
+  <span class="sep"></span>
+  <button id="b-grid">Gallery</button>
+  <button id="b-info">Info</button>
+  <button id="b-oled">OLED</button>
+  <button id="b-cycle">Cycle</button>
+  <span class="sep"></span>
+  <button id="b-full" title="Fullscreen (F)">⛶</button>
+</div>
+
+<div id="help" class="chrome">
+  <div><b>←</b><b>→</b> swap</div>
+  <div><b>G</b> gallery &nbsp; <b>I</b> info</div>
+  <div><b>O</b> oled &nbsp; <b>C</b> cycle &nbsp; <b>F</b> full</div>
+</div>
+
+<div id="grid">
+  <header>
+    <h2>Gallery</h2>
+    <span class="hint" id="g-hint">click to set</span>
+    <button class="close" id="g-close">Close ✕</button>
+  </header>
+  <div id="tiles"></div>
+</div>
+
+<script type="module">
+import { PRELUDE, WALLPAPERS } from './shaders.js';
+
+const CYCLE_MS = 60_000;
+const $ = id => document.getElementById(id);
+const canvas = $('gl');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, powerPreference:'high-performance' });
+if(!gl){ document.body.innerHTML = '<p style="padding:40px">This needs WebGL2.</p>'; throw 0; }
+
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem('lw.'+k); return v===null?d:JSON.parse(v); }catch{ return d; } },
+  set(k, v){ try{ localStorage.setItem('lw.'+k, JSON.stringify(v)); }catch{} }
+};
+
+const state = {
+  idx:    Math.min(store.get('idx', 0), WALLPAPERS.length-1),
+  oled:   store.get('oled', true),
+  info:   store.get('info', true),
+  cycle:  store.get('cycle', true),
+  scale:  1,
+  lastSwap: performance.now(),
+  order:  [],
+  op:     0
+};
+
+// ---------- GL plumbing ----------
+const VS = `#version 300 es
+void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+
+function compile(ctx, type, src){
+  const s = ctx.createShader(type);
+  ctx.shaderSource(s, src); ctx.compileShader(s);
+  if(!ctx.getShaderParameter(s, ctx.COMPILE_STATUS)) throw new Error(ctx.getShaderInfoLog(s));
+  return s;
+}
+function build(ctx, fsBody){
+  const p = ctx.createProgram();
+  ctx.attachShader(p, compile(ctx, ctx.VERTEX_SHADER, VS));
+  ctx.attachShader(p, compile(ctx, ctx.FRAGMENT_SHADER, PRELUDE + fsBody));
+  ctx.linkProgram(p);
+  if(!ctx.getProgramParameter(p, ctx.LINK_STATUS)) throw new Error(ctx.getProgramInfoLog(p));
+  return { p, u: {
+    res:  ctx.getUniformLocation(p,'u_res'),
+    time: ctx.getUniformLocation(p,'u_time'),
+    oled: ctx.getUniformLocation(p,'u_oled')
+  }};
+}
+
+const cache = new Map();
+function program(i){
+  if(!cache.has(i)){
+    try { cache.set(i, build(gl, WALLPAPERS[i].src)); }
+    catch(e){ console.error('shader', i, WALLPAPERS[i].name, e.message); cache.set(i, null); }
+  }
+  return cache.get(i);
+}
+gl.bindVertexArray(gl.createVertexArray());
+
+// ---------- sizing + adaptive resolution ----------
+// ponytail: naive frame-time EWMA, swap for a real budget scheduler if it ever thrashes
+let sizeW = 0, sizeH = 0;
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.ceil((innerWidth  + 16) * dpr * state.scale);
+  const h = Math.ceil((innerHeight + 16) * dpr * state.scale);
+  canvas.style.width  = (innerWidth  + 16) + 'px';
+  canvas.style.height = (innerHeight + 16) + 'px';
+  if(w !== sizeW || h !== sizeH){ canvas.width = sizeW = w; canvas.height = sizeH = h; }
+}
+addEventListener('resize', resize);
+
+let ewma = 16.7, sinceAdjust = 0;
+function tuneScale(dt){
+  ewma += (dt - ewma) * 0.05;
+  if(++sinceAdjust < 90) return;
+  sinceAdjust = 0;
+  const before = state.scale;
+  if(ewma > 26 && state.scale > 0.5)      state.scale = Math.max(0.5, state.scale - 0.15);
+  else if(ewma < 13 && state.scale < 1.0) state.scale = Math.min(1.0, state.scale + 0.10);
+  if(state.scale !== before) resize();
+}
+
+// ---------- render loop ----------
+const t0 = performance.now();
+let prev = t0, running = true;
+function frame(now){
+  if(!running) return;
+  requestAnimationFrame(frame);
+  const dt = now - prev; prev = now;
+  tuneScale(dt);
+
+  const prog = program(state.idx);
+  if(prog){
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.useProgram(prog.p);
+    gl.uniform2f(prog.u.res, canvas.width, canvas.height);
+    gl.uniform1f(prog.u.time, (now - t0) / 1000);
+    gl.uniform1f(prog.u.oled, state.oled ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  $('prog').style.width = state.cycle
+    ? Math.min((now - state.lastSwap) / CYCLE_MS, 1) * 100 + 'vw'
+    : '0';
+}
+
+// The cycle clock is NOT driven by the render loop: rAF is suspended whenever the
+// page is hidden or occluded, so a backgrounded wallpaper would freeze on one
+// entry and resume on the wrong one. A timer keeps wall-clock time either way.
+setInterval(() => {
+  if(state.cycle && performance.now() - state.lastSwap >= CYCLE_MS) next(1);
+}, 1000);
+
+// Rendering itself is pointless while hidden, so stop asking for frames and
+// restart cleanly when the page comes back.
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden){ running = false; }
+  else if(!running){ running = true; prev = performance.now(); requestAnimationFrame(frame); }
+});
+
+// ---------- shuffled order, no repeats until every one has shown ----------
+function reshuffle(startWith){
+  const a = WALLPAPERS.map((_, i) => i);
+  for(let i = a.length - 1; i > 0; i--){ const j = (Math.random()*(i+1))|0; [a[i],a[j]] = [a[j],a[i]]; }
+  if(startWith !== undefined){ const k = a.indexOf(startWith); [a[0],a[k]] = [a[k],a[0]]; }
+  state.order = a; state.op = 0;
+}
+reshuffle(state.idx);
+
+// ---------- swapping ----------
+let swapping = false;
+function commit(i){
+  state.idx = i; state.lastSwap = performance.now();
+  store.set('idx', i);
+  paintMeta();
+  shiftPixels();
+}
+function show(i){
+  if(swapping || i === state.idx) return;
+  program(i);                          // compile behind the fade, not during it
+  // Chrome throttles setTimeout hard in a hidden tab (minutes, not milliseconds),
+  // so a fade-timed swap would stall there. Nobody is watching a fade they cannot
+  // see: commit immediately when hidden, fade only when visible.
+  if(document.hidden){ commit(i); return; }
+  swapping = true;
+  $('fade').classList.add('on');
+  setTimeout(() => {
+    commit(i);
+    $('fade').classList.remove('on');
+    swapping = false;
+  }, 290);
+}
+function next(dir){
+  state.op += dir;
+  if(state.op >= state.order.length){ reshuffle(); state.op = 0; }
+  if(state.op < 0){ state.op = state.order.length - 1; }
+  show(state.order[state.op]);
+}
+
+// OLED burn-in guard: nudge the whole surface a few px on every swap.
+function shiftPixels(){
+  const r = () => (Math.random()*16 - 8).toFixed(1);
+  canvas.style.transform = `translate(${r()}px, ${r()}px)`;
+}
+
+// ---------- chrome ----------
+function paintMeta(){
+  const w = WALLPAPERS[state.idx];
+  $('c-name').textContent = w.name;
+  $('c-tag').textContent  = w.tag;
+  $('c-desc').textContent = w.desc;
+  $('count').textContent  = (state.idx+1) + ' / ' + WALLPAPERS.length;
+  document.title = w.name + ' — livewall';
+  document.querySelectorAll('.tile').forEach((t, i) => t.classList.toggle('active', i === state.idx));
+}
+function paintToggles(){
+  $('card').classList.toggle('hidden', !state.info);
+  $('b-info').classList.toggle('on',  state.info);
+  $('b-oled').classList.toggle('on',  state.oled);
+  $('b-cycle').classList.toggle('on', state.cycle);
+}
+const toggle = k => { state[k] = !state[k]; store.set(k, state[k]); paintToggles();
+                      if(k === 'cycle') state.lastSwap = performance.now(); };
+
+$('b-prev').onclick  = () => next(-1);
+$('b-next').onclick  = () => next(1);
+$('b-info').onclick  = () => toggle('info');
+$('b-oled').onclick  = () => toggle('oled');
+$('b-cycle').onclick = () => toggle('cycle');
+$('b-grid').onclick  = openGrid;
+$('g-close').onclick = closeGrid;
+$('b-full').onclick  = () => document.fullscreenElement ? document.exitFullscreen()
+                                                        : document.documentElement.requestFullscreen();
+
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if(k === 'escape'){ closeGrid(); return; }
+  if(k === 'arrowright' || k === ' ') { e.preventDefault(); next(1); }
+  else if(k === 'arrowleft')  next(-1);
+  else if(k === 'g') document.body.classList.contains('grid-open') ? closeGrid() : openGrid();
+  else if(k === 'i') toggle('info');
+  else if(k === 'o') toggle('oled');
+  else if(k === 'c') toggle('cycle');
+  else if(k === 'f') $('b-full').onclick();
+});
+
+// idle hide
+let idleTimer;
+function wake(){
+  document.body.classList.remove('idle');
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => document.body.classList.add('idle'), 3500);
+}
+['mousemove','mousedown','keydown','touchstart','wheel'].forEach(ev => addEventListener(ev, wake, {passive:true}));
+wake();
+
+// ---------- gallery thumbnails ----------
+// Rendered once on a throwaway GL context so the live wallpaper never stutters.
+const tiles = $('tiles');
+WALLPAPERS.forEach((w, i) => {
+  const el = document.createElement('div');
+  el.className = 'tile';
+  el.innerHTML = `<span class="n">${String(i+1).padStart(2,'0')}</span>
+                  <span class="lbl">${w.name}</span>`;
+  el.onclick = () => {
+    const k = state.order.indexOf(i);
+    if(k >= 0) state.op = k;
+    show(i); closeGrid();
+  };
+  tiles.appendChild(el);
+});
+
+function openGrid(){ document.body.classList.add('grid-open'); paintMeta(); }
+function closeGrid(){ document.body.classList.remove('grid-open'); }
+
+function makeThumbs(){
+  const c = document.createElement('canvas');
+  c.width = 384; c.height = 216;
+  const g2 = c.getContext('webgl2', { antialias:false, preserveDrawingBuffer:true });
+  if(!g2){ $('g-hint').textContent = 'click to set'; return; }
+  g2.bindVertexArray(g2.createVertexArray());
+  let i = 0;
+  const step = () => {
+    if(i >= WALLPAPERS.length){
+      $('g-hint').textContent = 'click to set';
+      g2.getExtension('WEBGL_lose_context')?.loseContext();
+      return;
+    }
+    try{
+      const pr = build(g2, WALLPAPERS[i].src);
+      g2.viewport(0, 0, c.width, c.height);
+      g2.useProgram(pr.p);
+      g2.uniform2f(pr.u.res, c.width, c.height);
+      g2.uniform1f(pr.u.time, 11.3 + i*2.7);
+      g2.uniform1f(pr.u.oled, state.oled ? 1 : 0);
+      g2.drawArrays(g2.TRIANGLES, 0, 3);
+      const img = new Image();
+      img.src = c.toDataURL('image/jpeg', 0.80);
+      tiles.children[i].prepend(img);
+    }catch(e){ console.error('thumb', i, e.message); }
+    $('g-hint').textContent = `rendering previews ${i+1}/${WALLPAPERS.length}`;
+    i++;
+    setTimeout(step, 30);
+  };
+  step();
+}
+
+// ---------- go ----------
+resize(); paintMeta(); paintToggles(); shiftPixels();
+requestAnimationFrame(frame);
+setTimeout(makeThumbs, 900);
+</script>
+</body>
+</html>
